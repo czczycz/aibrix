@@ -18,7 +18,6 @@ package gateway
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -137,26 +136,21 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	routingCtx.ReqConfigProfile = reqConfigProfile
 
 	// Async video job follow-ups (GET status/content, DELETE) carry their routing
-	// key -- video_id -- in the path, not the (often empty/absent) body. Envoy's
-	// ext_proc filter only invokes RequestBody processing when the request
+	// key -- the public job id -- in the path, not the (often empty/absent) body.
+	// Envoy's ext_proc filter only invokes RequestBody processing when the request
 	// actually has a body, so a bodyless request must be pinned here, at
 	// RequestHeaders, or it never gets pinned at all (see
 	// handleVideoJobSubResourceHeaders for the full explanation). When a body IS
 	// coming (EndOfStream false), HandleRequestBody's existing handling covers it.
 	if h.RequestHeaders.EndOfStream {
-		if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
-			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, videoID)
+		if publicJobID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, publicJobID)
 			return resp, user, rpm, routingCtx, videoTerm
 		}
-		// GET /v1/videos (list, no video_id) is fanned out across all of a
-		// model's pods and answered directly here -- see handleVideoListHeaders
-		// for why this can't be a normal single-pod routing decision.
-		if model, isListPath := parseVideoListRequest(requestPath); isListPath && reqHeaders[methodKey] == http.MethodGet {
-			if model == "" {
-				return videoListModelRequiredResponse(), user, rpm, routingCtx, term
-			}
-			routingCtx.Model = model
-			return s.handleVideoListHeaders(requestID, model), user, rpm, routingCtx, term
+		// GET /v1/videos is the caller's own job catalog, which only the gateway's
+		// registry knows -- there is no backend to route it to.
+		if isVideoListRequest(requestPath, reqHeaders[methodKey]) {
+			return s.handleVideoListHeaders(ctx, requestID, asyncJobOwnerFromRoutingContext(routingCtx)), user, rpm, routingCtx, term
 		}
 	}
 

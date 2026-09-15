@@ -558,6 +558,16 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 	}
 }
 
+// newAsyncJobStoreForClient picks the store a Server should use. Without Redis
+// (standalone/local dev) records live in this process only, which is enough for
+// a single replica and keeps the gateway runnable with no external dependency.
+func newAsyncJobStoreForClient(client *redis.Client) asyncJobStore {
+	if client == nil {
+		return newInMemoryAsyncJobStore()
+	}
+	return newRedisAsyncJobStore(asyncJobStoreClient(client))
+}
+
 // asyncJobStoreClient derives the client the store uses from the gateway's
 // shared one, with go-redis' own retry loop switched off.
 //
@@ -572,6 +582,18 @@ func asyncJobStoreClient(client *redis.Client) *redis.Client {
 	options := *client.Options()
 	options.MaxRetries = -1
 	return redis.NewClient(&options)
+}
+
+// asyncJobRegistry returns the Server's registry, building it on first use. The
+// lazy path exists for Servers assembled as struct literals (tests, and any
+// caller that does not go through NewServerWithOptions).
+func (s *Server) asyncJobRegistry() *AsyncJobRegistry {
+	s.asyncJobsOnce.Do(func() {
+		if s.asyncJobs == nil {
+			s.asyncJobs = newAsyncJobRegistry(newAsyncJobStoreForClient(s.redisClient), s.cache)
+		}
+	})
+	return s.asyncJobs
 }
 
 func (s *redisAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) error {
